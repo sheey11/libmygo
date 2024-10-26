@@ -21,9 +21,9 @@ var cacheSize = 128
 var bufferSize = 32
 
 // Block stores 2^20 key-values, occupying
-// 2^20 * 1KB + 2^20 / 8B = 1GB + 128KB on the disk.
-// up to 2^12 of this block is needed to store entire
-// 2^32 key space.
+// 2^20 * 1KB + 2^20 / 8B = 1GB + 128KB on the disk. up to
+// 2^12 of this block is needed to store entire 2^32 key
+// space.
 type Block struct {
 	// bitmap for this block, size = 128KB
 	bitmap bitmap.BitMap
@@ -31,28 +31,28 @@ type Block struct {
 	// vacancy in this block.
 	vacancy uint32
 
-	// cache of this block, LRU or FIFO? use map for now.
-	// only read cache will be stored here.
+	// cache of this block, LRU or FIFO? use map for now. only
+	// read cache will be stored here.
 	cache map[MyGOKey]MyGOValue
 
-	// block offset in the bigfile in bytes.
+	// start position of this block in the bigfile in bytes.
 	offset uint32
 
-	// pending changes to be write into filesystem, a map
-	// from block index to actual data.
+	// pending changes to be write into filesystem, a map with
+	// in-block index as key and actual data as value.
 	pendingChanges map[uint32]MyGOValue
 
 	// mutex for pendingChanges buffer
 	mutex sync.Mutex
 
-	// signal for manually flushing, it is a channel of channle pointer
+	// signal for flushing, it is a channel of channle pointer
 	// that closes if the flush is done.
 	flushSignal chan *chan struct{}
 
 	// the pointer(descriptor) to the storage file, here since
-	// golang is not safe to fork it self(multiple goroutines running),
-	// so the file will be opened multiple times, each block holds
-	// different file pointer.
+	// golang is not safe to fork it self(multiple goroutines
+	// running), so the file will be opened multiple times, each
+	// block holds different file pointer.
 	file *os.File
 }
 
@@ -72,9 +72,9 @@ func NewBlock(file *os.File, offset uint32) *Block {
 	return b
 }
 
-// goroutine to wirte pendingChanges to filesystem if flush
-// signal arrives or timeout. A flush signal will also
-// be sent via channel when the pendingChanges is full.
+// goroutine to wirte pendingChanges to filesystem if flush signal
+// arrives or timeout. A flush signal will also be sent via
+// channel when the pendingChanges is full.
 func (b *Block) flushWorker() {
 	flush := func() {
 		if len(b.pendingChanges) == 0 {
@@ -116,10 +116,12 @@ func (b *Block) FlushSync() {
 	<-waiter
 }
 
+// Is the block still have room for storaging.
 func (b *Block) Vacant() bool {
 	return b.vacancy != 0
 }
 
+// adjust vacancy by `diff` parameter atomically.
 func (b *Block) adjustVacancy(diff int) bool {
 	for {
 		old := b.vacancy
@@ -135,8 +137,8 @@ func (b *Block) adjustVacancy(diff int) bool {
 	}
 }
 
-// Put data to this block, returns success(if vacant) and
-// the offset in this block.
+// Put data to this block, returns success and the offset in
+// this block if there is still a room.
 func (b *Block) Put(data MyGOValue) (error, uint32) {
 	// flush buffer before write if buffer is full.
 	if len(b.pendingChanges) == bufferSize {
@@ -159,6 +161,7 @@ func (b *Block) Put(data MyGOValue) (error, uint32) {
 	return nil, offset
 }
 
+// Retrive MyGOValue from block.
 func (b *Block) Get(inBlockIndex uint32) MyGOValue {
 	b.mutex.Lock()
 	value, exist := b.pendingChanges[inBlockIndex]
@@ -184,10 +187,18 @@ func (b *Block) Get(inBlockIndex uint32) MyGOValue {
 	return buffer
 }
 
+// Delete
 func (b *Block) Delete(inBlockIndex uint32) {
-	b.bitmap.Set(int(inBlockIndex), false)
+	b.mutex.Lock()
+	// delete the element is necessary, because the iteration
+	// on map is un-ordered, if there's a Put() that be put on
+	// the same index, it is posible that flushWorker overwrites
+	// the nower data with this not deleted data.
+	// delete() do nothing if there's no such key in map.
+	delete(b.pendingChanges, inBlockIndex)
+	b.mutex.Unlock()
 
-	// no need to lock for increasing vacancy number
+	b.bitmap.Set(int(inBlockIndex), false)
 	b.adjustVacancy(1)
 }
 
